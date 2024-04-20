@@ -30,6 +30,7 @@ import { z } from 'zod'
 import { GeneralErrorBoundary } from './components/error-boundary.tsx'
 import { EpicProgress } from './components/progress-bar.tsx'
 import { SearchBar } from './components/search-bar.tsx'
+import { ThemeWrapper } from './components/themes/theme-wrapper.tsx'
 import { useToast } from './components/toaster.tsx'
 import { Button } from './components/ui/button.tsx'
 import {
@@ -44,6 +45,11 @@ import { EpicToaster } from './components/ui/sonner.tsx'
 import tailwindStyleSheetUrl from './styles/tailwind.css?url'
 import { getUserId, logout } from './utils/auth.server.ts'
 import { ClientHintCheck, getHints, useHints } from './utils/client-hints.tsx'
+import {
+	colorThemeKey,
+	colorThemeSessionStorage,
+	getColorTheme,
+} from './utils/color-theme.server.ts'
 import { prisma } from './utils/db.server.ts'
 import { getEnv } from './utils/env.server.ts'
 import { honeypot } from './utils/honeypot.server.ts'
@@ -134,6 +140,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 				path: new URL(request.url).pathname,
 				userPrefs: {
 					theme: getTheme(request),
+					colorTheme: await getColorTheme(request),
 				},
 			},
 			ENV: getEnv(),
@@ -160,8 +167,31 @@ const ThemeFormSchema = z.object({
 	theme: z.enum(['system', 'light', 'dark']),
 })
 
-export async function action({ request }: ActionFunctionArgs) {
-	const formData = await request.formData()
+async function colorThemeAction({
+	request,
+	colorTheme,
+}: {
+	request: Request
+	colorTheme: string
+}) {
+	// set the cookie
+	const colorThemeSession = await colorThemeSessionStorage.getSession(
+		request.headers.get('cookie'),
+	)
+	colorThemeSession.set(colorThemeKey, colorTheme)
+
+	return json(
+		{ colorTheme },
+		{
+			headers: {
+				'set-cookie':
+					await colorThemeSessionStorage.commitSession(colorThemeSession),
+			},
+		},
+	)
+}
+
+function themeAction(formData: FormData) {
 	const submission = parseWithZod(formData, {
 		schema: ThemeFormSchema,
 	})
@@ -174,6 +204,18 @@ export async function action({ request }: ActionFunctionArgs) {
 		headers: { 'set-cookie': setTheme(theme) },
 	}
 	return json({ result: submission.reply() }, responseInit)
+}
+
+export async function action({ request }: ActionFunctionArgs) {
+	const formData = await request.formData()
+
+	const colorTheme = formData.get('colorTheme') as string
+
+	if (colorTheme) {
+		return await colorThemeAction({ request, colorTheme })
+	}
+
+	return themeAction(formData)
 }
 
 function Document({
@@ -189,6 +231,16 @@ function Document({
 	env?: Record<string, string>
 	allowIndexing?: boolean
 }) {
+	const data = useLoaderData<typeof loader>()
+	const colorTheme = data.requestInfo.userPrefs.colorTheme
+	const fetchers = useFetchers()
+	const themeFetcher = fetchers.find(f => f.formAction === '/')
+	const optimisticColorTheme = themeFetcher?.formData?.get(
+		'colorTheme',
+	) as string
+
+	const color = optimisticColorTheme ?? colorTheme
+
 	return (
 		<html lang="en" className={`${theme} h-full overflow-x-hidden`}>
 			<head>
@@ -202,7 +254,7 @@ function Document({
 				<Links />
 			</head>
 			<body className="bg-background text-foreground">
-				{children}
+				<ThemeWrapper theme={color}>{children}</ThemeWrapper>
 				<script
 					nonce={nonce}
 					dangerouslySetInnerHTML={{
@@ -260,6 +312,7 @@ function App() {
 
 				<div className="container flex justify-between pb-5">
 					<Logo />
+					<ThemeSelector />
 					<ThemeSwitch userPreference={data.requestInfo.userPrefs.theme} />
 				</div>
 			</div>
@@ -388,7 +441,7 @@ export function useOptimisticThemeMode() {
 }
 
 function ThemeSwitch({ userPreference }: { userPreference?: Theme | null }) {
-	const fetcher = useFetcher<typeof action>()
+	const fetcher = useFetcher<typeof themeAction>()
 
 	const [form] = useForm({
 		id: 'theme-switch',
@@ -448,5 +501,51 @@ export function ErrorBoundary() {
 		<Document nonce={nonce}>
 			<GeneralErrorBoundary />
 		</Document>
+	)
+}
+
+export function ThemeSelector() {
+	const fetcher = useFetcher<typeof colorThemeAction>()
+
+	const [form] = useForm({
+		id: 'color-theme-switch',
+		// lastResult: fetcher.data?.colorTheme,
+	})
+
+	return (
+		<div className="flex items-center justify-center gap-2">
+			<fetcher.Form method="POST" {...getFormProps(form)}>
+				<Button
+					size="icon"
+					variant="outline"
+					type="submit"
+					name="colorTheme"
+					value="zinc"
+				>
+					<div className="aspect-square w-5 rounded-sm bg-zinc-950" />
+					<span className="sr-only">Zinc</span>
+				</Button>
+				<Button
+					size="icon"
+					variant="outline"
+					type="submit"
+					name="colorTheme"
+					value="orange"
+				>
+					<div className="aspect-square w-5 rounded-sm bg-orange-400" />
+					<span className="sr-only">Orange</span>
+				</Button>
+				<Button
+					size="icon"
+					variant="outline"
+					type="submit"
+					name="colorTheme"
+					value="green"
+				>
+					<div className="aspect-square w-5 rounded-sm bg-green-600" />
+					<span className="sr-only">Orange</span>
+				</Button>
+			</fetcher.Form>
+		</div>
 	)
 }
